@@ -261,6 +261,9 @@ export default function AttendancePortal() {
   // the merge payload so the server knows to actually delete them (a plain
   // key-union merge alone can't tell "never existed" apart from "removed").
   const pendingDeletesRef = useRef({ attendance: new Set(), sessions: new Set(), subjects: new Set(), students: new Set() });
+  // Bumped on every local edit (see the save-triggering effect below) so an
+  // in-flight poll can tell whether it's become stale mid-flight.
+  const localVersionRef = useRef(0);
 
   // ---------- authentication ----------
   // Session is remembered per-browser via localStorage (just who's logged
@@ -326,16 +329,27 @@ export default function AttendancePortal() {
   };
 
   const loadFromServer = async () => {
+    const versionBeforeFetch = localVersionRef.current;
     try {
       const res = await fetch("/api/state");
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
+      // If a local edit happened WHILE this fetch was in flight, this
+      // response no longer reflects the latest local state — applying it
+      // now would silently revert whatever the user just clicked (this is
+      // what caused marks to visibly "undo themselves" a couple of times
+      // before finally sticking). Discard it; the debounced save already
+      // in progress will persist the newer edit, and the next poll will
+      // pick up the merged result once that lands.
+      if (localVersionRef.current !== versionBeforeFetch) return;
       applyServerData(data);
       setSyncState("saved");
     } catch (err) {
       console.error("Failed to load attendance data:", err);
-      applyServerData(null);
-      setSyncState("error");
+      if (localVersionRef.current === versionBeforeFetch) {
+        applyServerData(null);
+        setSyncState("error");
+      }
     } finally {
       loadedRef.current = true;
       setLoading(false);
@@ -364,6 +378,7 @@ export default function AttendancePortal() {
   // debounced save to the server whenever data changes
   React.useEffect(() => {
     if (!loadedRef.current) return;
+    localVersionRef.current += 1;
     setSyncState("saving");
     clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(async () => {
