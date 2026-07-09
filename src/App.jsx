@@ -1604,10 +1604,31 @@ function StudentsTab({ students, subjects, attendance, addStudent, editStudent, 
             </tr>
           </thead>
           <tbody>
-            {filtered.map((s) => {
+            {filtered.map((s, idx) => {
               const { present, total } = presentStats(s.id);
+              const prevProgram = idx > 0 ? filtered[idx - 1].program : null;
+              const showDivider = s.program !== prevProgram;
               return (
-              <tr key={s.id} style={{ borderTop: `1px solid ${COLORS.line}`, background: editingId === s.id ? COLORS.parchmentDark : "transparent" }}>
+              <React.Fragment key={s.id}>
+                {showDivider && (
+                  <tr>
+                    <td
+                      colSpan={7}
+                      style={{
+                        background: COLORS.brassSoft,
+                        color: "#6B4F22",
+                        padding: "6px 16px",
+                        fontSize: 11,
+                        fontWeight: 700,
+                        textTransform: "uppercase",
+                        letterSpacing: 1,
+                      }}
+                    >
+                      {s.program} Students
+                    </td>
+                  </tr>
+                )}
+              <tr style={{ borderTop: `1px solid ${COLORS.line}`, background: editingId === s.id ? COLORS.parchmentDark : "transparent" }}>
                 <td style={{ ...tdStyle, fontFamily: "JetBrains Mono, monospace" }}>{s.id}</td>
                 <td style={tdStyle}>{s.name}</td>
                 <td style={{ ...tdStyle, color: COLORS.slate }}>{s.email}</td>
@@ -1637,6 +1658,7 @@ function StudentsTab({ students, subjects, attendance, addStudent, editStudent, 
                   </div>
                 </td>
               </tr>
+              </React.Fragment>
               );
             })}
             {filtered.length === 0 && (
@@ -2031,11 +2053,32 @@ function MarkTab({ subjects, studentsFor, attendance, setMark, getSession, setSe
             </tr>
           </thead>
           <tbody>
-            {roster.map((st) => {
+            {roster.map((st, idx) => {
               const key = `${st.id}__${subjectId}__${date}__${slot}`;
               const status = attendance[key]; // undefined = blank/unmarked
+              const prevProgram = idx > 0 ? roster[idx - 1].program : null;
+              const showDivider = st.program !== prevProgram;
               return (
-                <tr key={st.id} style={{ borderTop: `1px solid ${COLORS.line}` }}>
+                <React.Fragment key={st.id}>
+                  {showDivider && (
+                    <tr>
+                      <td
+                        colSpan={3}
+                        style={{
+                          background: COLORS.brassSoft,
+                          color: "#6B4F22",
+                          padding: "5px 16px",
+                          fontSize: 11,
+                          fontWeight: 700,
+                          textTransform: "uppercase",
+                          letterSpacing: 1,
+                        }}
+                      >
+                        {st.program} Students
+                      </td>
+                    </tr>
+                  )}
+                <tr style={{ borderTop: `1px solid ${COLORS.line}` }}>
                   <td style={{ ...tdStyle, fontFamily: "JetBrains Mono, monospace" }}>{st.id}</td>
                   <td style={tdStyle}>{st.name}</td>
                   <td style={{ ...tdStyle, textAlign: "center" }}>
@@ -2062,6 +2105,7 @@ function MarkTab({ subjects, studentsFor, attendance, setMark, getSession, setSe
                     </div>
                   </td>
                 </tr>
+                </React.Fragment>
               );
             })}
             {roster.length === 0 && (
@@ -2252,8 +2296,31 @@ function AllAttendanceTab({ students, subjects, attendance, sessions, studentsFo
                   {filteredRoster.map((st, idx) => {
                     let present = 0,
                       total = 0;
+                    const prevProgram = idx > 0 ? filteredRoster[idx - 1].program : null;
+                    const showDivider = st.program !== prevProgram;
                     return (
-                      <tr key={st.id} style={{ borderTop: `1px solid ${COLORS.line}`, background: idx % 2 === 1 ? COLORS.parchment : "#fff" }}>
+                      <React.Fragment key={st.id}>
+                        {showDivider && (
+                          <tr>
+                            <td
+                              colSpan={cols.length + 5}
+                              style={{
+                                background: COLORS.brassSoft,
+                                color: "#6B4F22",
+                                padding: "5px 16px",
+                                fontSize: 11,
+                                fontWeight: 700,
+                                textTransform: "uppercase",
+                                letterSpacing: 1,
+                                position: "sticky",
+                                left: 0,
+                              }}
+                            >
+                              {st.program} Students
+                            </td>
+                          </tr>
+                        )}
+                      <tr style={{ borderTop: `1px solid ${COLORS.line}`, background: idx % 2 === 1 ? COLORS.parchment : "#fff" }}>
                         <td style={{ ...tdStyle, fontFamily: "JetBrains Mono, monospace", position: "sticky", left: 0, background: "inherit" }}>{st.id}</td>
                         <td style={{ ...tdStyle, position: "sticky", left: 130, background: "inherit", whiteSpace: "nowrap" }}>{st.name}</td>
                         {cols.map(({ date, slot }) => {
@@ -2292,6 +2359,7 @@ function AllAttendanceTab({ students, subjects, attendance, sessions, studentsFo
                           {total ? Math.round((present / total) * 100) : 0}%
                         </td>
                       </tr>
+                      </React.Fragment>
                     );
                   })}
                   {filteredRoster.length === 0 && (
