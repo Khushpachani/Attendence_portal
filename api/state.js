@@ -87,6 +87,19 @@ function sortById(items) {
   });
 }
 
+// Students group by program first (MSc before PGD — their enrollment
+// number ranges don't sort in that order numerically), then by id within
+// each program.
+const PROGRAM_ORDER = { MSc: 0, PGD: 1 };
+function sortStudents(items) {
+  return [...items].sort((a, b) => {
+    const progA = PROGRAM_ORDER[a?.program] ?? 99;
+    const progB = PROGRAM_ORDER[b?.program] ?? 99;
+    if (progA !== progB) return progA - progB;
+    return String(a?.id ?? "").localeCompare(String(b?.id ?? ""));
+  });
+}
+
 async function readAll() {
   await autoHealFromLegacy();
 
@@ -108,7 +121,7 @@ async function readAll() {
   if (!hasAny) return null; // signal "nothing saved yet" so the client seeds sample data
   return {
     subjects: sortById(Object.values(subjectsObj)),
-    students: sortById(Object.values(studentsObj)),
+    students: sortStudents(Object.values(studentsObj)),
     attendance: toObj(attendanceRaw),
     sessions: toObj(sessionsRaw),
     attendanceMeta: toObj(metaRaw),
