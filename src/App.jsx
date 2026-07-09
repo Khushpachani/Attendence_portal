@@ -1,4 +1,5 @@
 import React, { useState, useMemo, useRef } from "react";
+import { createPortal } from "react-dom";
 import ExcelJS from "exceljs";
 import {
   LayoutGrid,
@@ -3595,8 +3596,19 @@ function StudentsTab({ students, subjects, attendance, addStudent, editStudent, 
         </div>
       )}
 
-      {showForm && (
-        <form onSubmit={submit} style={cardStyle}>
+      {showForm &&
+        createPortal(
+          <div
+            onClick={cancelForm}
+            className="rp-modal-backdrop"
+            style={{ position: "fixed", inset: 0, background: "rgba(27,42,74,0.35)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 50, padding: 20 }}
+          >
+        <form
+          onSubmit={submit}
+          onClick={(e) => e.stopPropagation()}
+          className="rp-modal-card"
+          style={{ ...cardStyle, width: "min(480px, 92vw)", margin: 0, maxHeight: "88vh", overflowY: "auto" }}
+        >
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
             <div style={{ fontFamily: "Fraunces, serif", fontWeight: 600, fontSize: 15 }}>
               {editingId ? "Edit Student" : "New Student"}
@@ -3657,7 +3669,9 @@ function StudentsTab({ students, subjects, attendance, addStudent, editStudent, 
             </button>
           </div>
         </form>
-      )}
+          </div>,
+          document.body
+        )}
 
       <div style={{ position: "relative", marginBottom: 14, maxWidth: 320 }}>
         <Search size={15} style={{ position: "absolute", left: 10, top: 10, color: COLORS.slate }} />
@@ -3782,7 +3796,7 @@ function TransferElectivePopover({ student, subjects, transferElective, onClose 
     setDone((d) => [...d, groupId]);
   };
 
-  return (
+  return createPortal(
     <div
       onClick={onClose}
       className="rp-modal-backdrop"
@@ -3839,7 +3853,8 @@ function TransferElectivePopover({ student, subjects, transferElective, onClose 
           Done
         </button>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }
 
@@ -3927,8 +3942,19 @@ function SubjectsTab({ subjects, addSubject, editSubject, removeSubject, student
         }
       />
 
-      {showForm && (
-        <form onSubmit={submit} style={cardStyle}>
+      {showForm &&
+        createPortal(
+          <div
+            onClick={cancelForm}
+            className="rp-modal-backdrop"
+            style={{ position: "fixed", inset: 0, background: "rgba(27,42,74,0.35)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 50, padding: 20 }}
+          >
+        <form
+          onSubmit={submit}
+          onClick={(e) => e.stopPropagation()}
+          className="rp-modal-card"
+          style={{ ...cardStyle, width: "min(560px, 92vw)", margin: 0, maxHeight: "88vh", overflowY: "auto" }}
+        >
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
             <div style={{ fontFamily: "Fraunces, serif", fontWeight: 600, fontSize: 15 }}>
               {editingId ? "Edit Subject" : "New Subject"}
@@ -3981,7 +4007,9 @@ function SubjectsTab({ subjects, addSubject, editSubject, removeSubject, student
             </button>
           </div>
         </form>
-      )}
+          </div>,
+          document.body
+        )}
 
       <div style={{ fontSize: 12, fontWeight: 600, color: COLORS.slate, marginBottom: 10, textTransform: "uppercase", letterSpacing: 1 }}>
         Core subjects ({core.length}) · compulsory for everyone
@@ -4519,7 +4547,7 @@ function SessionEditPopover({ subject, date, slot, session, onSave, onDelete, on
     onClose();
   };
 
-  return (
+  return createPortal(
     <div
       onClick={onClose}
       className="rp-modal-backdrop"
@@ -4585,7 +4613,8 @@ function SessionEditPopover({ subject, date, slot, session, onSave, onDelete, on
           </button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }
 
