@@ -18,6 +18,7 @@ import {
   ArrowRightLeft,
   ShieldCheck,
   History,
+  Menu,
 } from "lucide-react";
 
 // ---------- design tokens ----------
@@ -56,6 +57,42 @@ function pctColor(pct) {
 }
 
 const FONT_IMPORT = `@import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');`;
+
+// Mobile/responsive support. Most of this component uses inline styles, so
+// rather than rewrite every style object, targeted utility classes here
+// carry the responsive behavior (with !important where it needs to beat an
+// inline style) for the handful of layout patterns that repeat throughout:
+// multi-column grids that should stack, tables that need horizontal
+// scrolling instead of squeezing, and the sidebar becoming a slide-in
+// drawer on narrow screens.
+const RESPONSIVE_CSS = `
+  .rp-topbar { display: none; }
+  .rp-scroll-x { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  @media (max-width: 860px) {
+    .rp-sidebar {
+      position: fixed !important;
+      left: 0; top: 0; bottom: 0;
+      transform: translateX(-100%);
+      transition: transform 0.2s ease;
+      z-index: 200;
+      box-shadow: 4px 0 24px rgba(0,0,0,0.25);
+    }
+    .rp-sidebar.rp-open { transform: translateX(0); }
+    .rp-topbar {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 12px 16px; background: #1B2A4A; color: #F7F4EA;
+      position: sticky; top: 0; z-index: 100;
+    }
+    .rp-main { padding: 16px !important; }
+    .rp-grid-2, .rp-grid-3, .rp-grid-4, .rp-form-grid { grid-template-columns: 1fr !important; }
+    .rp-hide-mobile { display: none !important; }
+    .rp-stack-mobile { flex-direction: column !important; align-items: stretch !important; }
+    .rp-login-card { width: 92vw !important; max-width: 360px; padding: 24px !important; }
+  }
+  @media (min-width: 861px) {
+    .rp-backdrop { display: none !important; }
+  }
+`;
 
 // The class periods as they actually appear on the RRU timetable, including
 // the combined double-periods (e.g. lab sessions spanning two slots).
@@ -251,6 +288,7 @@ export default function AttendancePortal() {
   // checks elsewhere don't need to change. Never included in Excel exports.
   const [attendanceMeta, setAttendanceMeta] = useState({});
   const [tab, setTab] = useState("dashboard");
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [downloadSubjectId, setDownloadSubjectId] = useState("all");
   const [loading, setLoading] = useState(true);
   const [syncState, setSyncState] = useState("idle"); // idle | saving | saved | error
@@ -503,7 +541,7 @@ export default function AttendancePortal() {
           color: COLORS.ink,
         }}
       >
-        <style>{FONT_IMPORT}</style>
+        <style>{FONT_IMPORT + RESPONSIVE_CSS}</style>
         Loading attendance data…
       </div>
     );
@@ -1047,10 +1085,39 @@ export default function AttendancePortal() {
 
   return (
     <div style={{ fontFamily: "Inter, sans-serif", background: COLORS.parchment, minHeight: "100vh", color: COLORS.ink }}>
-      <style>{FONT_IMPORT}</style>
+      <style>{FONT_IMPORT + RESPONSIVE_CSS}</style>
+
+      {/* Mobile-only top bar with hamburger toggle */}
+      <div className="rp-topbar">
+        <button
+          onClick={() => setMobileMenuOpen((v) => !v)}
+          style={{ background: "transparent", border: "none", color: COLORS.parchment, cursor: "pointer", padding: 4, display: "flex" }}
+          aria-label="Toggle menu"
+        >
+          <Menu size={22} />
+        </button>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, fontFamily: "Fraunces, serif", fontWeight: 700, fontSize: 16 }}>
+          <Stamp size={18} color={COLORS.brass} />
+          Attendance Register
+        </div>
+        <div style={{ width: 22 }} />
+      </div>
+
+      {/* Backdrop, closes the drawer on tap outside it (mobile only) */}
+      {mobileMenuOpen && (
+        <div
+          className="rp-backdrop"
+          onClick={() => setMobileMenuOpen(false)}
+          style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.4)", zIndex: 150 }}
+        />
+      )}
+
       <div style={{ minHeight: "100vh", display: "flex" }}>
         {/* Sidebar */}
-        <aside style={{ width: 220, background: COLORS.ink, color: COLORS.parchment, flexShrink: 0, display: "flex", flexDirection: "column" }}>
+        <aside
+          className={`rp-sidebar${mobileMenuOpen ? " rp-open" : ""}`}
+          style={{ width: 220, background: COLORS.ink, color: COLORS.parchment, flexShrink: 0, display: "flex", flexDirection: "column" }}
+        >
           <div style={{ padding: "24px 20px", borderBottom: `1px solid ${COLORS.inkSoft}` }}>
             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
               <Stamp size={22} color={COLORS.brass} />
@@ -1074,14 +1141,17 @@ export default function AttendancePortal() {
               </button>
             </div>
           </div>
-          <nav style={{ padding: "12px 10px", flex: 1 }}>
+          <nav style={{ padding: "12px 10px", flex: 1, overflowY: "auto" }}>
             {TABS.filter((t) => !t.adminOnly || currentUser.role === "admin").map((t) => {
               const Icon = t.icon;
               const active = tab === t.id;
               return (
                 <button
                   key={t.id}
-                  onClick={() => setTab(t.id)}
+                  onClick={() => {
+                    setTab(t.id);
+                    setMobileMenuOpen(false);
+                  }}
                   style={{
                     width: "100%",
                     display: "flex",
@@ -1201,7 +1271,7 @@ export default function AttendancePortal() {
         </aside>
 
         {/* Main */}
-        <main style={{ flex: 1, padding: "28px 36px", overflow: "auto" }}>
+        <main className="rp-main" style={{ flex: 1, padding: "28px 36px", overflow: "auto", minWidth: 0 }}>
           {tab === "dashboard" && <Dashboard subjectStats={subjectStats} students={students} />}
           {tab === "students" && (
             <StudentsTab
@@ -1305,9 +1375,10 @@ function LoginScreen({ onLogin }) {
         fontFamily: "Inter, sans-serif",
       }}
     >
-      <style>{FONT_IMPORT}</style>
+      <style>{FONT_IMPORT + RESPONSIVE_CSS}</style>
       <form
         onSubmit={submit}
+        className="rp-login-card"
         style={{
           background: COLORS.parchment,
           borderRadius: 16,
@@ -1377,7 +1448,7 @@ function Dashboard({ subjectStats, students }) {
     <div>
       <SectionTitle eyebrow="Overview" title="All Subjects · Average Attendance" />
 
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 16, marginBottom: 30 }}>
+      <div className="rp-grid-3" style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 16, marginBottom: 30 }}>
         <StatCard label="Enrolled Students" value={students.length} />
         <StatCard label="Subjects Running" value={subjectStats.length} />
         <StatCard label="Overall Average Attendance" value={`${overallAvg}%`} accent />
@@ -1541,7 +1612,7 @@ function StudentsTab({ students, subjects, attendance, addStudent, editStudent, 
               <X size={16} />
             </button>
           </div>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 12 }}>
+          <div className="rp-form-grid" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 12 }}>
             <input required placeholder="Full name" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} style={inputStyle} />
             <input required type="email" placeholder="Email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} style={inputStyle} />
             <input placeholder="Enrollment no. (auto if blank)" value={form.id} onChange={(e) => setForm({ ...form, id: e.target.value })} style={inputStyle} />
@@ -1556,7 +1627,7 @@ function StudentsTab({ students, subjects, attendance, addStudent, editStudent, 
             {ELECTIVE_GROUPS.length > 0 && " Pick one elective from each group below — this also updates their roster in the Subjects tab."}
           </div>
           {ELECTIVE_GROUPS.length > 0 && (
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 16 }}>
+            <div className="rp-form-grid" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 16 }}>
               {ELECTIVE_GROUPS.map((g) => (
                 <div key={g.id}>
                   <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>
@@ -1605,7 +1676,7 @@ function StudentsTab({ students, subjects, attendance, addStudent, editStudent, 
         />
       </div>
 
-      <div style={{ background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 12, overflow: "hidden" }}>
+      <div className="rp-scroll-x" style={{ background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 12, overflowX: "auto", overflowY: "hidden" }}>
         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
           <thead>
             <tr style={{ background: COLORS.parchmentDark, textAlign: "left" }}>
@@ -1723,7 +1794,7 @@ function TransferElectivePopover({ student, subjects, transferElective, onClose 
       onClick={onClose}
       style={{ position: "fixed", inset: 0, background: "rgba(27,42,74,0.35)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 50 }}
     >
-      <div onClick={(e) => e.stopPropagation()} style={{ ...cardStyle, width: 420, margin: 0 }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ ...cardStyle, width: "min(420px, 92vw)", margin: 0 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
           <div style={{ fontFamily: "Fraunces, serif", fontWeight: 600, fontSize: 15 }}>Transfer Elective</div>
           <button onClick={onClose} style={iconBtn}>
@@ -1872,7 +1943,7 @@ function SubjectsTab({ subjects, addSubject, editSubject, removeSubject, student
               <X size={16} />
             </button>
           </div>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 2fr 1fr 1fr", gap: 12, marginBottom: 12 }}>
+          <div className="rp-form-grid" style={{ display: "grid", gridTemplateColumns: "1fr 2fr 1fr 1fr", gap: 12, marginBottom: 12 }}>
             <input required placeholder="Code e.g. EL-401" value={form.code} onChange={(e) => setForm({ ...form, code: e.target.value })} style={inputStyle} />
             <input required placeholder="Subject name" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} style={inputStyle} />
             <select value={form.type} onChange={(e) => setForm({ ...form, type: e.target.value })} style={inputStyle}>
@@ -1891,7 +1962,7 @@ function SubjectsTab({ subjects, addSubject, editSubject, removeSubject, student
               <div />
             )}
           </div>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12, marginBottom: 16 }}>
+          <div className="rp-form-grid" style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12, marginBottom: 16 }}>
             <select value={form.program} onChange={(e) => setForm({ ...form, program: e.target.value })} style={inputStyle}>
               <option value="Both">Both (MSc + PGD)</option>
               <option value="MSc">MSc only</option>
@@ -1921,7 +1992,7 @@ function SubjectsTab({ subjects, addSubject, editSubject, removeSubject, student
       <div style={{ fontSize: 12, fontWeight: 600, color: COLORS.slate, marginBottom: 10, textTransform: "uppercase", letterSpacing: 1 }}>
         Core subjects ({core.length}) · compulsory for everyone
       </div>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 14, marginBottom: 28 }}>
+      <div className="rp-grid-2" style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 14, marginBottom: 28 }}>
         {core.map(SubjectCard)}
       </div>
 
@@ -1930,7 +2001,7 @@ function SubjectsTab({ subjects, addSubject, editSubject, removeSubject, student
           <div style={{ fontSize: 12, fontWeight: 600, color: COLORS.slate, marginBottom: 10, textTransform: "uppercase", letterSpacing: 1 }}>
             {g.label} ({g.subjects.length}) · {g.pick}
           </div>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 14 }}>{g.subjects.map(SubjectCard)}</div>
+          <div className="rp-grid-2" style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 14 }}>{g.subjects.map(SubjectCard)}</div>
         </div>
       ))}
     </div>
@@ -2058,7 +2129,7 @@ function MarkTab({ subjects, studentsFor, attendance, setMark, getSession, setSe
         />
       </div>
 
-      <div style={{ background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 12, overflow: "hidden" }}>
+      <div className="rp-scroll-x" style={{ background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 12, overflowX: "auto", overflowY: "hidden" }}>
         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
           <thead>
             <tr style={{ background: COLORS.parchmentDark, textAlign: "left" }}>
@@ -2274,7 +2345,7 @@ function AllAttendanceTab({ students, subjects, attendance, sessions, studentsFo
               No sessions recorded for this subject yet — mark attendance in the "Mark Attendance" tab, or add a session above.
             </div>
           ) : (
-            <div style={{ background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 12, overflow: "auto" }}>
+            <div className="rp-scroll-x" style={{ background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 12, overflow: "auto" }}>
               <table style={{ borderCollapse: "collapse", fontSize: 12.5, minWidth: "100%" }}>
                 <thead>
                   <tr style={{ background: COLORS.parchmentDark, textAlign: "left" }}>
@@ -2466,7 +2537,7 @@ function SessionEditPopover({ subject, date, slot, session, onSave, onDelete, on
         zIndex: 50,
       }}
     >
-      <div onClick={(e) => e.stopPropagation()} style={{ ...cardStyle, width: 360, margin: 0 }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ ...cardStyle, width: "min(360px, 92vw)", margin: 0 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
           <div style={{ fontFamily: "Fraunces, serif", fontWeight: 600, fontSize: 15 }}>
             {subject.code} — {new Date(date).toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" })}
@@ -2614,7 +2685,7 @@ function AuditLogTab({ students, subjects, attendance, attendanceMeta, sessions 
         </select>
       </div>
 
-      <div style={{ background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 12, overflow: "hidden" }}>
+      <div className="rp-scroll-x" style={{ background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 12, overflowX: "auto", overflowY: "hidden" }}>
         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
           <thead>
             <tr style={{ background: COLORS.parchmentDark, textAlign: "left" }}>
@@ -2668,8 +2739,8 @@ function ReportsTab({ studentStats }) {
   return (
     <div>
       <SectionTitle eyebrow="Per Student" title="Attendance Reports" />
-      <div style={{ display: "grid", gridTemplateColumns: "300px 1fr", gap: 18 }}>
-        <div style={{ background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 12, overflow: "hidden", alignSelf: "start" }}>
+      <div className="rp-form-grid" style={{ display: "grid", gridTemplateColumns: "300px 1fr", gap: 18 }}>
+        <div className="rp-scroll-x" style={{ background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 12, overflowX: "auto", overflowY: "hidden", alignSelf: "start" }}>
           {studentStats.map((s) => (
             <button
               key={s.id}
@@ -2877,7 +2948,7 @@ function UsersTab() {
         </div>
       </form>
 
-      <div style={{ background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 12, overflow: "hidden" }}>
+      <div className="rp-scroll-x" style={{ background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 12, overflowX: "auto", overflowY: "hidden" }}>
         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
           <thead>
             <tr style={{ background: COLORS.parchmentDark, textAlign: "left" }}>
