@@ -19,6 +19,7 @@ import {
   ShieldCheck,
   History,
   Menu,
+  Upload,
 } from "lucide-react";
 
 // ---------- design tokens ----------
@@ -262,6 +263,132 @@ function pastDates(n) {
   return out.reverse();
 }
 
+// ---------- roster import (Excel / CSV) ----------
+// Minimal CSV parser that handles quoted fields (including embedded commas
+// and escaped quotes) — good enough for a typical roster export, without
+// pulling in another dependency alongside exceljs.
+function parseCSVText(text) {
+  const rows = [];
+  let row = [];
+  let field = "";
+  let inQuotes = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (inQuotes) {
+      if (c === '"') {
+        if (text[i + 1] === '"') {
+          field += '"';
+          i++;
+        } else {
+          inQuotes = false;
+        }
+      } else {
+        field += c;
+      }
+    } else if (c === '"') {
+      inQuotes = true;
+    } else if (c === ",") {
+      row.push(field);
+      field = "";
+    } else if (c === "\n" || c === "\r") {
+      if (c === "\r" && text[i + 1] === "\n") i++;
+      row.push(field);
+      rows.push(row);
+      row = [];
+      field = "";
+    } else {
+      field += c;
+    }
+  }
+  if (field.length > 0 || row.length > 0) {
+    row.push(field);
+    rows.push(row);
+  }
+  return rows.filter((r) => r.some((cell) => String(cell).trim() !== ""));
+}
+
+// Header aliases so the import isn't picky about exact column naming —
+// matches case-insensitively against any of these per field.
+const IMPORT_COLUMN_ALIASES = {
+  id: ["enrollment no", "enrollment no.", "enrollment number", "enrollment", "id", "student id", "roll no", "roll number"],
+  name: ["name", "student name", "full name"],
+  email: ["email", "email address", "email id"],
+  program: ["program", "course", "programme"],
+  electives: ["electives", "elective subjects", "elective"],
+};
+
+function findColumnIndex(headerRow, aliases) {
+  const normalized = headerRow.map((h) => String(h || "").trim().toLowerCase());
+  for (const alias of aliases) {
+    const idx = normalized.indexOf(alias);
+    if (idx !== -1) return idx;
+  }
+  return -1;
+}
+
+function normalizeProgram(value) {
+  const v = String(value || "").trim().toLowerCase();
+  if (v.startsWith("pgd") || v.includes("diploma")) return "PGD";
+  if (v.startsWith("msc") || v.includes("master")) return "MSc";
+  return value ? String(value).trim() : "";
+}
+
+// Turns raw sheet/CSV rows (array-of-arrays, first row = header) into
+// student objects, matching an "Electives" column's text against known
+// subjects by code or name.
+function rowsToStudents(rows, subjects) {
+  if (!rows.length) return [];
+  const header = rows[0];
+  const col = {
+    id: findColumnIndex(header, IMPORT_COLUMN_ALIASES.id),
+    name: findColumnIndex(header, IMPORT_COLUMN_ALIASES.name),
+    email: findColumnIndex(header, IMPORT_COLUMN_ALIASES.email),
+    program: findColumnIndex(header, IMPORT_COLUMN_ALIASES.program),
+    electives: findColumnIndex(header, IMPORT_COLUMN_ALIASES.electives),
+  };
+  const matchSubject = (text) => {
+    const t = text.trim().toLowerCase();
+    if (!t) return null;
+    const found = subjects.find((s) => s.code.toLowerCase() === t || s.name.toLowerCase() === t);
+    return found ? found.id : null;
+  };
+
+  return rows.slice(1).map((r) => {
+    const electivesRaw = col.electives !== -1 ? String(r[col.electives] || "") : "";
+    const electives = electivesRaw
+      .split(/[,;]/)
+      .map((s) => matchSubject(s))
+      .filter(Boolean);
+    return {
+      id: col.id !== -1 ? String(r[col.id] || "").trim() : "",
+      name: col.name !== -1 ? String(r[col.name] || "").trim() : "",
+      email: col.email !== -1 ? String(r[col.email] || "").trim() : "",
+      program: col.program !== -1 ? normalizeProgram(r[col.program]) : "",
+      electives,
+    };
+  });
+}
+
+async function parseImportFile(file, subjects) {
+  const ext = file.name.split(".").pop().toLowerCase();
+  let rows;
+  if (ext === "csv") {
+    const text = await file.text();
+    rows = parseCSVText(text);
+  } else {
+    const buffer = await file.arrayBuffer();
+    const wb = new ExcelJS.Workbook();
+    await wb.xlsx.load(buffer);
+    const ws = wb.worksheets[0];
+    rows = [];
+    ws.eachRow({ includeEmpty: false }, (row) => {
+      // row.values is 1-indexed with a leading empty slot in ExcelJS
+      rows.push(row.values.slice(1).map((v) => (v && typeof v === "object" && "text" in v ? v.text : v)));
+    });
+  }
+  return rowsToStudents(rows, subjects);
+}
+
 // Attendance holds ONE status per student per lecture. Time and remark
 // belong to the *session* (subject + date) as a whole — e.g. "faculty on
 // leave, proxy lecture taken by Mr. X" or "class rescheduled to lab" — not
@@ -330,7 +457,8 @@ export default function AttendancePortal() {
   const [tab, setTab] = useState("dashboard");
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [downloadSubjectId, setDownloadSubjectId] = useState("all");
-  const [loading, setLoading] = useState(true);
+  const [hasLoadedOnce, setHasLoadedOnce] = useState(false);
+  const [loadError, setLoadError] = useState(false);
   const [syncState, setSyncState] = useState("idle"); // idle | saving | saved | error
   const idCounter = useRef(100);
   const loadedRef = useRef(false);
@@ -420,17 +548,27 @@ export default function AttendancePortal() {
       // in progress will persist the newer edit, and the next poll will
       // pick up the merged result once that lands.
       if (localVersionRef.current !== versionBeforeFetch) return;
-      applyServerData(data);
+      applyServerData(data); // data === null here means the DB is genuinely empty (server said so) — safe to seed and save
       setSyncState("saved");
+      // Only flip this on once we've *confirmed* what the server actually
+      // has. Setting it on failure too (as a previous version of this code
+      // did) meant a flaky connection on a new device would fall back to
+      // local sample data and then happily auto-save that sample data over
+      // whatever real data was already in the database — silently wiping
+      // it. Now, on failure, we leave whatever's currently on screen alone
+      // and simply don't allow saving until a load actually succeeds.
+      loadedRef.current = true;
+      setHasLoadedOnce(true);
+      setLoadError(false);
     } catch (err) {
       console.error("Failed to load attendance data:", err);
-      if (localVersionRef.current === versionBeforeFetch) {
-        applyServerData(null);
-        setSyncState("error");
-      }
-    } finally {
-      loadedRef.current = true;
-      setLoading(false);
+      setSyncState("error");
+      setLoadError(true);
+      // Deliberately do NOT seed fallback data here, and do NOT enable
+      // saving — we don't actually know what's in the database right now,
+      // so guessing would risk overwriting it once a save eventually
+      // fires. The polling loop keeps retrying in the background; once a
+      // fetch succeeds, the real data loads in and saving turns on normally.
     }
   };
 
@@ -568,7 +706,7 @@ export default function AttendancePortal() {
     return <LoginScreen onLogin={login} />;
   }
 
-  if (loading) {
+  if (!hasLoadedOnce) {
     return (
       <div
         style={{
@@ -581,20 +719,34 @@ export default function AttendancePortal() {
           background: COLORS.parchment,
           fontFamily: "Inter, sans-serif",
           color: COLORS.ink,
+          padding: 24,
+          textAlign: "center",
         }}
       >
         <style>{FONT_IMPORT + RESPONSIVE_CSS + ANIMATION_CSS}</style>
-        <div
-          className="rp-spin"
-          style={{
-            width: 34,
-            height: 34,
-            borderRadius: "50%",
-            border: `3px solid ${COLORS.line}`,
-            borderTopColor: COLORS.brass,
-          }}
-        />
-        <div style={{ fontSize: 13, color: COLORS.slate }}>Loading attendance data…</div>
+        {loadError ? (
+          <>
+            <div style={{ width: 34, height: 34, borderRadius: "50%", background: COLORS.absentSoft, display: "flex", alignItems: "center", justifyContent: "center" }}>
+              <span style={{ color: COLORS.absent, fontWeight: 700 }}>!</span>
+            </div>
+            <div style={{ fontSize: 14, fontWeight: 600 }}>Couldn't reach the shared database</div>
+            <div style={{ fontSize: 12, color: COLORS.slate, maxWidth: 320 }}>
+              To make sure nothing gets overwritten, the app won't show or save any data until it can confirm what's actually stored. Retrying
+              automatically in the background — or try now:
+            </div>
+            <button onClick={loadFromServer} style={btnPrimary}>
+              Retry now
+            </button>
+          </>
+        ) : (
+          <>
+            <div
+              className="rp-spin"
+              style={{ width: 34, height: 34, borderRadius: "50%", border: `3px solid ${COLORS.line}`, borderTopColor: COLORS.brass }}
+            />
+            <div style={{ fontSize: 13, color: COLORS.slate }}>Loading attendance data…</div>
+          </>
+        )}
       </div>
     );
   }
@@ -636,6 +788,43 @@ export default function AttendancePortal() {
   const removeStudent = (id) => {
     setStudents((prev) => prev.filter((s) => s.id !== id));
     pendingDeletesRef.current.students.add(id);
+  };
+  // Bulk import from an uploaded Excel/CSV roster: upserts by enrollment
+  // number — existing students get their details refreshed, new ones get
+  // added. Doesn't touch students already present but absent from the file.
+  const importStudents = (parsedRows) => {
+    const byId = new Map(students.map((s) => [s.id, s]));
+    let added = 0,
+      updated = 0,
+      skipped = 0;
+    parsedRows.forEach((r) => {
+      if (!r.id || !r.name) {
+        skipped++;
+        return;
+      }
+      const existing = byId.get(r.id);
+      if (existing) {
+        byId.set(r.id, {
+          ...existing,
+          name: r.name || existing.name,
+          email: r.email || existing.email,
+          program: r.program || existing.program,
+          electives: r.electives && r.electives.length ? r.electives : existing.electives,
+        });
+        updated++;
+      } else {
+        byId.set(r.id, {
+          id: r.id,
+          name: r.name,
+          email: r.email || "",
+          program: r.program || "MSc",
+          electives: r.electives || [],
+        });
+        added++;
+      }
+    });
+    setStudents(Array.from(byId.values()));
+    return { added, updated, skipped };
   };
   const addSubject = (data) => {
     setSubjects((prev) => [...prev, { ...data, id: `S${idCounter.current++}` }]);
@@ -1338,6 +1527,7 @@ export default function AttendancePortal() {
               editStudent={editStudent}
               removeStudent={removeStudent}
               transferElective={transferElective}
+              importStudents={importStudents}
             />
           )}
           {tab === "subjects" && (
@@ -1574,13 +1764,38 @@ function StatCard({ label, value, accent }) {
 }
 
 // ============================================================
-function StudentsTab({ students, subjects, attendance, addStudent, editStudent, removeStudent, transferElective }) {
+function StudentsTab({ students, subjects, attendance, addStudent, editStudent, removeStudent, transferElective, importStudents }) {
   const [showForm, setShowForm] = useState(false);
   const [editingId, setEditingId] = useState(null); // null = adding a new student
   const emptyForm = { name: "", email: "", id: "", program: "MSc", electiveByGroup: { G1: "", G2: "" } };
   const [form, setForm] = useState(emptyForm);
   const [search, setSearch] = useState("");
   const [transferStudent, setTransferStudent] = useState(null);
+  const [importing, setImporting] = useState(false);
+  const [importResult, setImportResult] = useState(null); // { added, updated, skipped } or { error }
+  const fileInputRef = useRef(null);
+
+  const handleImportFile = async (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = ""; // reset so re-selecting the same file re-triggers onChange
+    if (!file) return;
+    setImporting(true);
+    setImportResult(null);
+    try {
+      const rows = await parseImportFile(file, subjects);
+      if (rows.length === 0) {
+        setImportResult({ error: "No rows found — check the file has a header row with Enrollment No / Name columns." });
+        return;
+      }
+      const result = importStudents(rows);
+      setImportResult(result);
+    } catch (err) {
+      console.error("Import failed:", err);
+      setImportResult({ error: "Couldn't read that file. Make sure it's a valid .xlsx or .csv." });
+    } finally {
+      setImporting(false);
+    }
+  };
 
   const optionsFor = (groupId) => subjects.filter((s) => s.type === "elective" && s.group === groupId);
 
@@ -1654,11 +1869,50 @@ function StudentsTab({ students, subjects, attendance, addStudent, editStudent, 
         eyebrow="Batch 2024"
         title="Students"
         action={
-          <button onClick={showForm && !editingId ? cancelForm : startAdd} style={btnPrimary}>
-            <Plus size={15} /> Add Student
-          </button>
+          <div style={{ display: "flex", gap: 8 }}>
+            <input ref={fileInputRef} type="file" accept=".xlsx,.xls,.csv" onChange={handleImportFile} style={{ display: "none" }} />
+            <button
+              onClick={() => fileInputRef.current?.click()}
+              disabled={importing}
+              style={{ ...btnGhost, borderColor: COLORS.line, color: COLORS.ink, opacity: importing ? 0.6 : 1 }}
+            >
+              <Upload size={14} style={{ marginRight: 6 }} />
+              {importing ? "Importing…" : "Import Excel/CSV"}
+            </button>
+            <button onClick={showForm && !editingId ? cancelForm : startAdd} style={btnPrimary}>
+              <Plus size={15} /> Add Student
+            </button>
+          </div>
         }
       />
+
+      {importResult && (
+        <div
+          className="rp-banner"
+          style={{
+            background: importResult.error ? COLORS.absentSoft : COLORS.presentSoft,
+            color: importResult.error ? COLORS.absent : COLORS.present,
+            fontSize: 13,
+            fontWeight: 600,
+            padding: "10px 14px",
+            borderRadius: 8,
+            marginBottom: 16,
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            gap: 12,
+          }}
+        >
+          <span>
+            {importResult.error
+              ? importResult.error
+              : `Imported: ${importResult.added} added, ${importResult.updated} updated${importResult.skipped ? `, ${importResult.skipped} skipped (missing name/enrollment no.)` : ""}.`}
+          </span>
+          <button onClick={() => setImportResult(null)} style={{ ...iconBtn, color: "inherit" }}>
+            <X size={14} />
+          </button>
+        </div>
+      )}
 
       {showForm && (
         <form onSubmit={submit} style={cardStyle}>
