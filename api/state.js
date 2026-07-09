@@ -45,7 +45,51 @@ function coerce(value) {
   }
 }
 
+async function autoHealFromLegacy() {
+  // If data still exists at the pre-migration key, it takes priority over
+  // whatever's currently in the new hash storage — since that old key only
+  // still exists if it was never cleared out, meaning nothing since the
+  // storage format changed has been treated as "real" yet. Restore it
+  // automatically and remove the old key so this only ever runs once.
+  const legacy = await redis.get(LEGACY_STATE_KEY);
+  const hasLegacyData =
+    legacy && typeof legacy === "object" && ((legacy.students && legacy.students.length) || Object.keys(legacy.attendance || {}).length);
+  if (!hasLegacyData) return;
+
+  await redis.del(H.subjects, H.students, H.attendance, H.sessions, H.attendanceMeta);
+  await writeAll(legacy);
+  await redis.del(LEGACY_STATE_KEY);
+}
+
+// Redis hash field order isn't guaranteed to stay stable across reads —
+// without an explicit sort, the same data can come back in a different
+// order on each poll, which looks like rows randomly reshuffling in the
+// UI. Sort deterministically every time instead of relying on hash order.
+function sortById(items) {
+  return [...items].sort((a, b) => {
+    const idA = String(a?.id ?? "");
+    const idB = String(b?.id ?? "");
+    // Same-length ids (e.g. two 18-digit enrollment numbers) compare
+    // correctly and exactly as plain strings — no need to parse them as
+    // numbers, which matters because enrollment numbers are far longer
+    // than JS can represent exactly as a Number (parseInt on an 18-digit
+    // id silently loses precision and gives a wrong, if stable, order).
+    if (idA.length === idB.length) return idA.localeCompare(idB);
+    // Different lengths only really comes up for short ids like subject
+    // codes ("S1" vs "S100"), where a numeric comparison is safe and gives
+    // the intended order instead of a lexical one ("S100" < "S2").
+    const numA = Number(idA.replace(/\D/g, ""));
+    const numB = Number(idB.replace(/\D/g, ""));
+    if (Number.isSafeInteger(numA) && Number.isSafeInteger(numB)) {
+      return numA - numB;
+    }
+    return idA.localeCompare(idB);
+  });
+}
+
 async function readAll() {
+  await autoHealFromLegacy();
+
   const [subjectsRaw, studentsRaw, attendanceRaw, sessionsRaw, metaRaw] = await Promise.all([
     redis.hgetall(H.subjects),
     redis.hgetall(H.students),
@@ -63,8 +107,8 @@ async function readAll() {
   const hasAny = [subjectsRaw, studentsRaw, attendanceRaw, sessionsRaw, metaRaw].some((r) => r && Object.keys(r).length > 0);
   if (!hasAny) return null; // signal "nothing saved yet" so the client seeds sample data
   return {
-    subjects: Object.values(subjectsObj),
-    students: Object.values(studentsObj),
+    subjects: sortById(Object.values(subjectsObj)),
+    students: sortById(Object.values(studentsObj)),
     attendance: toObj(attendanceRaw),
     sessions: toObj(sessionsRaw),
     attendanceMeta: toObj(metaRaw),
