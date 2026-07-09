@@ -260,7 +260,7 @@ export default function AttendancePortal() {
   // Keys explicitly removed since the last successful save — sent alongside
   // the merge payload so the server knows to actually delete them (a plain
   // key-union merge alone can't tell "never existed" apart from "removed").
-  const pendingDeletesRef = useRef({ attendance: new Set(), sessions: new Set() });
+  const pendingDeletesRef = useRef({ attendance: new Set(), sessions: new Set(), subjects: new Set(), students: new Set() });
 
   // ---------- authentication ----------
   // Session is remembered per-browser via localStorage (just who's logged
@@ -368,15 +368,29 @@ export default function AttendancePortal() {
       // the ones actually sent (not any added mid-flight by the user)
       const deletedAttendanceKeys = Array.from(pendingDeletesRef.current.attendance);
       const deletedSessionKeys = Array.from(pendingDeletesRef.current.sessions);
+      const deletedSubjectIds = Array.from(pendingDeletesRef.current.subjects);
+      const deletedStudentIds = Array.from(pendingDeletesRef.current.students);
       try {
         const res = await fetch("/api/state", {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ subjects, students, attendance, sessions, attendanceMeta, deletedAttendanceKeys, deletedSessionKeys }),
+          body: JSON.stringify({
+            subjects,
+            students,
+            attendance,
+            sessions,
+            attendanceMeta,
+            deletedAttendanceKeys,
+            deletedSessionKeys,
+            deletedSubjectIds,
+            deletedStudentIds,
+          }),
         });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         deletedAttendanceKeys.forEach((k) => pendingDeletesRef.current.attendance.delete(k));
         deletedSessionKeys.forEach((k) => pendingDeletesRef.current.sessions.delete(k));
+        deletedSubjectIds.forEach((k) => pendingDeletesRef.current.subjects.delete(k));
+        deletedStudentIds.forEach((k) => pendingDeletesRef.current.students.delete(k));
         setSyncState("saved");
       } catch (err) {
         console.error("Failed to save attendance data:", err);
@@ -389,6 +403,12 @@ export default function AttendancePortal() {
 
   const resetToSampleData = async () => {
     if (!window.confirm("This clears everything for EVERYONE using this app and restores the original sample data. Continue?")) return;
+    try {
+      await fetch("/api/state", { method: "DELETE" });
+    } catch (err) {
+      console.error("Failed to clear server data:", err);
+    }
+    pendingDeletesRef.current = { attendance: new Set(), sessions: new Set(), subjects: new Set(), students: new Set() };
     setSubjects(seedSubjects);
     setStudents(seedStudents);
     const dates = pastDates(10);
@@ -507,6 +527,7 @@ export default function AttendancePortal() {
   };
   const removeStudent = (id) => {
     setStudents((prev) => prev.filter((s) => s.id !== id));
+    pendingDeletesRef.current.students.add(id);
   };
   const addSubject = (data) => {
     setSubjects((prev) => [...prev, { ...data, id: `S${idCounter.current++}` }]);
@@ -516,6 +537,7 @@ export default function AttendancePortal() {
   };
   const removeSubject = (id) => {
     setSubjects((prev) => prev.filter((s) => s.id !== id));
+    pendingDeletesRef.current.subjects.add(id);
   };
   // Switch a student from one elective to another WITHIN THE SAME GROUP,
   // carrying their existing attendance history over to the new subject
