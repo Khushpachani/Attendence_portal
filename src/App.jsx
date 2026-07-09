@@ -94,6 +94,46 @@ const RESPONSIVE_CSS = `
   }
 `;
 
+// A small, cohesive set of motion — tab transitions, modal entrances,
+// button/table feedback, hover lifts — applied globally via plain element
+// selectors (buttons, table rows) plus a handful of utility classes for the
+// spots that need something more specific (modals, cards, the sync dot).
+const ANIMATION_CSS = `
+  @keyframes rpFadeInUp { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+  @keyframes rpFadeIn { from { opacity: 0; } to { opacity: 1; } }
+  @keyframes rpScaleIn { from { opacity: 0; transform: scale(0.96) translateY(4px); } to { opacity: 1; transform: scale(1) translateY(0); } }
+  @keyframes rpPulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+  @keyframes rpSpin { to { transform: rotate(360deg); } }
+  @keyframes rpSlideDown { from { opacity: 0; transform: translateY(-8px); } to { opacity: 1; transform: translateY(0); } }
+
+  button, select, input {
+    transition: background-color 0.15s ease, color 0.15s ease, border-color 0.15s ease,
+      box-shadow 0.15s ease, opacity 0.15s ease, transform 0.1s ease;
+  }
+  button:active { transform: scale(0.96); }
+  select:focus, input:focus { outline: none; box-shadow: 0 0 0 3px rgba(176,141,87,0.25); }
+
+  .rp-tab-content { animation: rpFadeInUp 0.22s ease both; }
+  .rp-modal-backdrop { animation: rpFadeIn 0.15s ease both; }
+  .rp-modal-card { animation: rpScaleIn 0.2s cubic-bezier(0.16, 1, 0.3, 1) both; }
+  .rp-banner { animation: rpSlideDown 0.25s ease both; }
+
+  .rp-card-hover { transition: transform 0.18s ease, box-shadow 0.18s ease; }
+  .rp-card-hover:hover { transform: translateY(-3px); box-shadow: 0 10px 24px rgba(27,42,74,0.14); }
+
+  .rp-sync-dot-saving { animation: rpPulse 1s ease-in-out infinite; }
+  .rp-spin { animation: rpSpin 0.8s linear infinite; }
+
+  .rp-nav-btn { transition: background-color 0.15s ease, color 0.15s ease, transform 0.1s ease; }
+  .rp-nav-btn:hover:not([data-active="true"]) { background: rgba(247,244,234,0.08); }
+
+  .rp-bar-fill { transition: width 0.5s cubic-bezier(0.16, 1, 0.3, 1); }
+
+  tbody tr { transition: background-color 0.12s ease; }
+  .rp-status-btn { transition: background-color 0.15s ease, color 0.15s ease, transform 0.1s ease, border-color 0.15s ease; }
+  .rp-status-btn:hover { transform: translateY(-1px); }
+`;
+
 // The class periods as they actually appear on the RRU timetable, including
 // the combined double-periods (e.g. lab sessions spanning two slots).
 // Must match api/users.js — the single hardcoded admin account.
@@ -534,15 +574,27 @@ export default function AttendancePortal() {
         style={{
           minHeight: "100vh",
           display: "flex",
+          flexDirection: "column",
           alignItems: "center",
           justifyContent: "center",
+          gap: 14,
           background: COLORS.parchment,
           fontFamily: "Inter, sans-serif",
           color: COLORS.ink,
         }}
       >
-        <style>{FONT_IMPORT + RESPONSIVE_CSS}</style>
-        Loading attendance data…
+        <style>{FONT_IMPORT + RESPONSIVE_CSS + ANIMATION_CSS}</style>
+        <div
+          className="rp-spin"
+          style={{
+            width: 34,
+            height: 34,
+            borderRadius: "50%",
+            border: `3px solid ${COLORS.line}`,
+            borderTopColor: COLORS.brass,
+          }}
+        />
+        <div style={{ fontSize: 13, color: COLORS.slate }}>Loading attendance data…</div>
       </div>
     );
   }
@@ -1085,7 +1137,7 @@ export default function AttendancePortal() {
 
   return (
     <div style={{ fontFamily: "Inter, sans-serif", background: COLORS.parchment, minHeight: "100vh", color: COLORS.ink }}>
-      <style>{FONT_IMPORT + RESPONSIVE_CSS}</style>
+      <style>{FONT_IMPORT + RESPONSIVE_CSS + ANIMATION_CSS}</style>
 
       {/* Mobile-only top bar with hamburger toggle */}
       <div className="rp-topbar">
@@ -1148,6 +1200,8 @@ export default function AttendancePortal() {
               return (
                 <button
                   key={t.id}
+                  className="rp-nav-btn"
+                  data-active={active}
                   onClick={() => {
                     setTab(t.id);
                     setMobileMenuOpen(false);
@@ -1232,6 +1286,7 @@ export default function AttendancePortal() {
               }}
             >
               <span
+                className={syncState === "saving" ? "rp-sync-dot-saving" : ""}
                 style={{
                   width: 6,
                   height: 6,
@@ -1272,6 +1327,7 @@ export default function AttendancePortal() {
 
         {/* Main */}
         <main className="rp-main" style={{ flex: 1, padding: "28px 36px", overflow: "auto", minWidth: 0 }}>
+          <div key={tab} className="rp-tab-content">
           {tab === "dashboard" && <Dashboard subjectStats={subjectStats} students={students} />}
           {tab === "students" && (
             <StudentsTab
@@ -1328,6 +1384,7 @@ export default function AttendancePortal() {
             />
           )}
           {tab === "users" && currentUser.role === "admin" && <UsersTab />}
+          </div>
         </main>
       </div>
     </div>
@@ -1375,7 +1432,7 @@ function LoginScreen({ onLogin }) {
         fontFamily: "Inter, sans-serif",
       }}
     >
-      <style>{FONT_IMPORT + RESPONSIVE_CSS}</style>
+      <style>{FONT_IMPORT + RESPONSIVE_CSS + ANIMATION_CSS}</style>
       <form
         onSubmit={submit}
         className="rp-login-card"
@@ -1411,7 +1468,7 @@ function LoginScreen({ onLogin }) {
         />
 
         {error && (
-          <div style={{ fontSize: 12, color: COLORS.absent, marginBottom: 14, fontWeight: 600 }}>{error}</div>
+          <div className="rp-banner" style={{ fontSize: 12, color: COLORS.absent, marginBottom: 14, fontWeight: 600 }}>{error}</div>
         )}
 
         <button type="submit" disabled={busy} style={{ ...btnPrimary, width: "100%", justifyContent: "center", opacity: busy ? 0.6 : 1 }}>
@@ -1476,12 +1533,12 @@ function Dashboard({ subjectStats, students }) {
               </div>
               <div style={{ flex: 1, background: COLORS.parchmentDark, borderRadius: 6, height: 14, position: "relative" }}>
                 <div
+                  className="rp-bar-fill"
                   style={{
                     width: `${(s.pct / 100) * 100}%`,
                     background: pctColor(s.pct),
                     height: "100%",
                     borderRadius: 6,
-                    transition: "width .3s",
                   }}
                 />
               </div>
@@ -1499,6 +1556,7 @@ function Dashboard({ subjectStats, students }) {
 function StatCard({ label, value, accent }) {
   return (
     <div
+      className="rp-card-hover"
       style={{
         background: accent ? COLORS.ink : "#fff",
         color: accent ? COLORS.parchment : COLORS.ink,
@@ -1792,9 +1850,10 @@ function TransferElectivePopover({ student, subjects, transferElective, onClose 
   return (
     <div
       onClick={onClose}
+      className="rp-modal-backdrop"
       style={{ position: "fixed", inset: 0, background: "rgba(27,42,74,0.35)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 50 }}
     >
-      <div onClick={(e) => e.stopPropagation()} style={{ ...cardStyle, width: "min(420px, 92vw)", margin: 0 }}>
+      <div onClick={(e) => e.stopPropagation()} className="rp-modal-card" style={{ ...cardStyle, width: "min(420px, 92vw)", margin: 0 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
           <div style={{ fontFamily: "Fraunces, serif", fontWeight: 600, fontSize: 15 }}>Transfer Elective</div>
           <button onClick={onClose} style={iconBtn}>
@@ -1898,7 +1957,7 @@ function SubjectsTab({ subjects, addSubject, editSubject, removeSubject, student
   }));
 
   const SubjectCard = (s) => (
-    <div key={s.id} style={{ ...cardStyle, margin: 0, display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+    <div key={s.id} className="rp-card-hover" style={{ ...cardStyle, margin: 0, display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
       <div>
         <div style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 11, color: COLORS.brass, marginBottom: 4 }}>{s.code}</div>
         <div style={{ fontFamily: "Fraunces, serif", fontWeight: 600, fontSize: 16, marginBottom: 6 }}>{s.name}</div>
@@ -2175,6 +2234,7 @@ function MarkTab({ subjects, studentsFor, attendance, setMark, getSession, setSe
                         return (
                           <button
                             key={s}
+                            className="rp-status-btn"
                             onClick={() => setMark(st.id, subjectId, date, s, slot)}
                             style={{
                               ...pillBtn,
@@ -2527,6 +2587,7 @@ function SessionEditPopover({ subject, date, slot, session, onSave, onDelete, on
   return (
     <div
       onClick={onClose}
+      className="rp-modal-backdrop"
       style={{
         position: "fixed",
         inset: 0,
@@ -2537,7 +2598,7 @@ function SessionEditPopover({ subject, date, slot, session, onSave, onDelete, on
         zIndex: 50,
       }}
     >
-      <div onClick={(e) => e.stopPropagation()} style={{ ...cardStyle, width: "min(360px, 92vw)", margin: 0 }}>
+      <div onClick={(e) => e.stopPropagation()} className="rp-modal-card" style={{ ...cardStyle, width: "min(360px, 92vw)", margin: 0 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
           <div style={{ fontFamily: "Fraunces, serif", fontWeight: 600, fontSize: 15 }}>
             {subject.code} — {new Date(date).toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" })}
@@ -2785,6 +2846,7 @@ function ReportsTab({ studentStats }) {
                   <div style={{ width: 200, fontSize: 13 }}>{b.subject.name}</div>
                   <div style={{ flex: 1, background: COLORS.parchmentDark, borderRadius: 6, height: 10 }}>
                     <div
+                      className="rp-bar-fill"
                       style={{
                         width: `${b.pct}%`,
                         background: pctColor(b.pct),
@@ -2927,12 +2989,12 @@ function UsersTab() {
       <SectionTitle eyebrow="Admin Control Panel" title="Manage Users" />
 
       {toast && (
-        <div style={{ background: COLORS.presentSoft, color: COLORS.present, fontSize: 13, fontWeight: 600, padding: "10px 14px", borderRadius: 8, marginBottom: 16 }}>
+        <div className="rp-banner" style={{ background: COLORS.presentSoft, color: COLORS.present, fontSize: 13, fontWeight: 600, padding: "10px 14px", borderRadius: 8, marginBottom: 16 }}>
           {toast}
         </div>
       )}
       {error && (
-        <div style={{ background: COLORS.absentSoft, color: COLORS.absent, fontSize: 13, fontWeight: 600, padding: "10px 14px", borderRadius: 8, marginBottom: 16 }}>
+        <div className="rp-banner" style={{ background: COLORS.absentSoft, color: COLORS.absent, fontSize: 13, fontWeight: 600, padding: "10px 14px", borderRadius: 8, marginBottom: 16 }}>
           {error}
         </div>
       )}
