@@ -325,9 +325,6 @@ export default function AttendancePortal() {
     }
   };
 
-  const [legacyBackup, setLegacyBackup] = useState(null); // {summary} once detected, or null
-  const [restoring, setRestoring] = useState(false);
-
   const loadFromServer = async () => {
     try {
       const res = await fetch("/api/state");
@@ -345,51 +342,13 @@ export default function AttendancePortal() {
     }
   };
 
-  const checkForLegacyBackup = async () => {
-    try {
-      const res = await fetch("/api/state", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "peekLegacy" }),
-      });
-      const data = await res.json();
-      if (data.ok && data.found) setLegacyBackup(data.summary);
-    } catch {
-      /* silent — this is a best-effort convenience check */
-    }
-  };
-
-  const restoreLegacyBackup = async () => {
-    if (!window.confirm("This replaces everything currently in the app with the backup from before the last update. Continue?")) return;
-    setRestoring(true);
-    try {
-      const res = await fetch("/api/state", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "restoreLegacy" }),
-      });
-      const data = await res.json();
-      if (data.ok) {
-        setLegacyBackup(null);
-        await loadFromServer();
-        window.alert(
-          `Restored: ${data.restored.students} students, ${data.restored.subjects} subjects, ${data.restored.attendance} attendance records.`
-        );
-      } else {
-        window.alert(data.error || "Restore failed.");
-      }
-    } catch (err) {
-      window.alert("Couldn't reach the server to restore.");
-    } finally {
-      setRestoring(false);
-    }
-  };
-
-  // initial load, plus a one-time check for recoverable pre-update data
+  // initial load — if older pre-update data still exists, the server
+  // automatically restores it in place of any placeholder data before
+  // responding, so this single fetch is all that's needed.
   React.useEffect(() => {
     loadFromServer();
-    checkForLegacyBackup();
   }, []);
+
 
   // lightweight polling so faculty see each other's edits without a manual
   // refresh — paused while this tab has unsaved local edits in flight
@@ -1074,52 +1033,6 @@ export default function AttendancePortal() {
   return (
     <div style={{ fontFamily: "Inter, sans-serif", background: COLORS.parchment, minHeight: "100vh", color: COLORS.ink }}>
       <style>{FONT_IMPORT}</style>
-      {legacyBackup && (
-        <div
-          style={{
-            background: COLORS.warn,
-            color: "#fff",
-            padding: "10px 20px",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            gap: 16,
-            flexWrap: "wrap",
-            fontSize: 13,
-            position: "sticky",
-            top: 0,
-            zIndex: 100,
-          }}
-        >
-          <span>
-            <strong>Found older data</strong> from before the last update — {legacyBackup.students} students, {legacyBackup.subjects} subjects,{" "}
-            {legacyBackup.attendance} attendance records.
-          </span>
-          <button
-            onClick={restoreLegacyBackup}
-            disabled={restoring}
-            style={{
-              background: "#fff",
-              color: COLORS.warn,
-              border: "none",
-              borderRadius: 6,
-              padding: "6px 14px",
-              fontWeight: 700,
-              fontSize: 12,
-              cursor: restoring ? "default" : "pointer",
-              opacity: restoring ? 0.7 : 1,
-            }}
-          >
-            {restoring ? "Restoring…" : "Restore this data"}
-          </button>
-          <button
-            onClick={() => setLegacyBackup(null)}
-            style={{ background: "transparent", border: "none", color: "#fff", textDecoration: "underline", fontSize: 12, cursor: "pointer" }}
-          >
-            Dismiss
-          </button>
-        </div>
-      )}
       <div style={{ minHeight: "100vh", display: "flex" }}>
         {/* Sidebar */}
         <aside style={{ width: 220, background: COLORS.ink, color: COLORS.parchment, flexShrink: 0, display: "flex", flexDirection: "column" }}>
