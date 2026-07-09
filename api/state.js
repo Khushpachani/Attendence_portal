@@ -28,6 +28,11 @@ const H = {
   attendanceMeta: "attendance-portal:h:attendanceMeta", // field = same as attendance, value = {editedBy, editedAt}
 };
 
+// The single-blob key used before storage switched to per-field hashes.
+// Nothing ever explicitly deletes this key, so if it has data, it's a safe
+// recovery point for anyone who lost data when the storage format changed.
+const LEGACY_STATE_KEY = "attendance-portal:state";
+
 // @upstash/redis auto-serializes on write and auto-deserializes on read for
 // most values, but be defensive in case a value ever comes back as a raw
 // JSON string (depends on SDK version / how it was originally written).
@@ -127,6 +132,51 @@ export default async function handler(req, res) {
         res.status(400).json({ error: "Request body must be a JSON object." });
         return;
       }
+
+      // One-time recovery: restore from the pre-migration single-blob key,
+      // overwriting whatever (if anything) is currently in the new
+      // hash-based storage. Used once after the storage format changed.
+      if (body.action === "restoreLegacy") {
+        const legacy = await redis.get(LEGACY_STATE_KEY);
+        if (!legacy || typeof legacy !== "object") {
+          res.status(404).json({ ok: false, error: "No previous backup found at the legacy key." });
+          return;
+        }
+        await redis.del(H.subjects, H.students, H.attendance, H.sessions, H.attendanceMeta);
+        await writeAll(legacy);
+        res.status(200).json({
+          ok: true,
+          restored: {
+            subjects: (legacy.subjects || []).length,
+            students: (legacy.students || []).length,
+            attendance: Object.keys(legacy.attendance || {}).length,
+            sessions: Object.keys(legacy.sessions || {}).length,
+          },
+        });
+        return;
+      }
+
+      // Check whether a legacy backup exists and how big it looks, without
+      // changing anything — lets the UI ask "restore this?" before doing it.
+      if (body.action === "peekLegacy") {
+        const legacy = await redis.get(LEGACY_STATE_KEY);
+        if (!legacy || typeof legacy !== "object") {
+          res.status(200).json({ ok: true, found: false });
+          return;
+        }
+        res.status(200).json({
+          ok: true,
+          found: true,
+          summary: {
+            subjects: (legacy.subjects || []).length,
+            students: (legacy.students || []).length,
+            attendance: Object.keys(legacy.attendance || {}).length,
+            sessions: Object.keys(legacy.sessions || {}).length,
+          },
+        });
+        return;
+      }
+
       await writeAll(body);
       res.status(200).json({ ok: true, savedAt: new Date().toISOString() });
       return;
