@@ -2950,7 +2950,7 @@ export default function AttendancePortal() {
         const [date, slot] = k.split("__");
         return { date, slot };
       })
-      .sort((a, b) => (a.date === b.date ? Number(a.slot) - Number(b.slot) : a.date < b.date ? -1 : 1));
+      .sort((a, b) => (a.date === b.date ? Number(a.slot) - Number(b.slot) : new Date(a.date).getTime() - new Date(b.date).getTime()));
 
     let baseName = subject.code.replace(/[\\/*?:[\]]/g, "-").slice(0, 28) || subject.id;
     let sheetName = baseName;
@@ -4563,7 +4563,7 @@ function AllAttendanceTab({ students, subjects, attendance, sessions, studentsFo
         const [date, slot] = k.split("__");
         return { date, slot };
       })
-      .sort((a, b) => (a.date === b.date ? Number(a.slot) - Number(b.slot) : a.date < b.date ? -1 : 1));
+      .sort((a, b) => (a.date === b.date ? Number(a.slot) - Number(b.slot) : new Date(a.date).getTime() - new Date(b.date).getTime()));
   }, [sessions, attendance, subject, roster]);
 
   const filteredRoster = roster.filter(
