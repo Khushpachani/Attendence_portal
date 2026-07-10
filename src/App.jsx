@@ -390,6 +390,101 @@ async function parseImportFile(file, subjects) {
   return rowsToStudents(rows, subjects);
 }
 
+// ---------- attendance register import (multi-sheet Excel) ----------
+// Reads a workbook shaped like a real attendance register: one sheet per
+// subject (sheet name = subject code, e.g. "RM", "OS&MF", "SMF"), with
+// dates as columns and a boolean/True-False (or P/A) grid of students ×
+// dates. Auto-detects the header row and date columns rather than assuming
+// a fixed layout, and treats two same-day columns as separate sessions.
+const norm = (s) => String(s || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+
+function cellToStatus(val) {
+  if (val === null || val === undefined || val === "") return null;
+  if (typeof val === "boolean") return val ? "present" : "absent";
+  const s = String(val).trim().toLowerCase();
+  if (["true", "p", "present", "1", "yes", "y"].includes(s)) return "present";
+  if (["false", "a", "absent", "0", "no", "n"].includes(s)) return "absent";
+  return null;
+}
+
+async function parseAttendanceWorkbook(file, subjects) {
+  const buffer = await file.arrayBuffer();
+  const wb = new ExcelJS.Workbook();
+  await wb.xlsx.load(buffer);
+
+  const records = []; // {enroll, subjectId, date, slot, status}
+  const sessions = []; // {subjectId, date, slot, time}
+  const matchedSheets = [];
+  const unmatchedSheets = [];
+
+  wb.worksheets.forEach((ws) => {
+    const sheetNorm = norm(ws.name);
+    const subject = subjects.find((s) => norm(s.code) === sheetNorm) || subjects.find((s) => norm(s.name) === sheetNorm);
+    if (!subject) {
+      unmatchedSheets.push(ws.name);
+      return;
+    }
+
+    // find the header row by scanning for a cell containing "enrollment"
+    let headerRow = -1,
+      enrollCol = -1;
+    for (let r = 1; r <= Math.min(12, ws.rowCount); r++) {
+      for (let c = 1; c <= ws.columnCount; c++) {
+        const cellText = norm(ws.getRow(r).getCell(c).value);
+        if (cellText.includes("enrollment")) {
+          headerRow = r;
+          enrollCol = c;
+          break;
+        }
+      }
+      if (headerRow !== -1) break;
+    }
+    if (headerRow === -1) {
+      unmatchedSheets.push(`${ws.name} (couldn't find an "Enrollment" column)`);
+      return;
+    }
+
+    // date columns: scan the couple of rows above/at the header for actual
+    // Date-typed cells to the right of the enrollment column
+    const dateCols = []; // {col, date, time}
+    for (let scanRow = Math.max(1, headerRow - 2); scanRow <= headerRow; scanRow++) {
+      for (let c = enrollCol + 1; c <= ws.columnCount; c++) {
+        const cell = ws.getRow(scanRow).getCell(c);
+        if (cell.value instanceof Date) {
+          const dateStr = cell.value.toISOString().slice(0, 10);
+          const timeVal = ws.getRow(headerRow).getCell(c).value;
+          dateCols.push({ col: c, date: dateStr, time: timeVal ? String(timeVal).trim() : "" });
+        }
+      }
+    }
+    if (dateCols.length === 0) {
+      unmatchedSheets.push(`${ws.name} (couldn't find any date columns)`);
+      return;
+    }
+
+    // same date appearing more than once in a sheet = separate sessions
+    const seenDates = {};
+    dateCols.forEach((dc) => {
+      seenDates[dc.date] = (seenDates[dc.date] || 0) + 1;
+      dc.slot = String(seenDates[dc.date]);
+      sessions.push({ subjectId: subject.id, date: dc.date, slot: dc.slot, time: dc.time });
+    });
+
+    matchedSheets.push(ws.name);
+
+    for (let r = headerRow + 1; r <= ws.rowCount; r++) {
+      const enroll = String(ws.getRow(r).getCell(enrollCol).value || "").trim();
+      if (!/^\d{4,}$/.test(enroll)) continue; // skip blanks, "Total" rows, batch-label rows, etc.
+      dateCols.forEach((dc) => {
+        const status = cellToStatus(ws.getRow(r).getCell(dc.col).value);
+        if (status) records.push({ enroll, subjectId: subject.id, date: dc.date, slot: dc.slot, status });
+      });
+    }
+  });
+
+  return { records, sessions, matchedSheets, unmatchedSheets };
+}
+
 // Attendance holds ONE status per student per lecture. Time and remark
 // belong to the *session* (subject + date) as a whole — e.g. "faculty on
 // leave, proxy lecture taken by Mr. X" or "class rescheduled to lab" — not
@@ -2141,6 +2236,8 @@ export default function AttendancePortal() {
   const [tab, setTab] = useState("dashboard");
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [downloadSubjectId, setDownloadSubjectId] = useState("all");
+  const [importingAttendance, setImportingAttendance] = useState(false);
+  const attendanceFileInputRef = useRef(null);
   const [hasLoadedOnce, setHasLoadedOnce] = useState(false);
   const [loadError, setLoadError] = useState(false);
   const [syncState, setSyncState] = useState("idle"); // idle | saving | saved | error
@@ -2154,6 +2251,15 @@ export default function AttendancePortal() {
   // Bumped on every local edit (see the save-triggering effect below) so an
   // in-flight poll can tell whether it's become stale mid-flight.
   const localVersionRef = useRef(0);
+  // Snapshot of exactly what's known-saved as of the last successful sync.
+  // Every save diffs current state against this to send ONLY what actually
+  // changed — critical for deletes: sending the *entire* local state on
+  // every save (the previous approach) means any client with a slightly
+  // stale snapshot (another tab, another device, or even this same tab a
+  // moment later) can silently re-upsert a record someone else just
+  // deleted, since a plain "upsert everything I know about" can't tell the
+  // difference between "unchanged" and "please restore this."
+  const lastSyncedRef = useRef({ attendance: {}, sessions: {}, attendanceMeta: {}, subjects: [], students: [] });
 
   // ---------- authentication ----------
   // Session is remembered per-browser via localStorage (just who's logged
@@ -2185,8 +2291,10 @@ export default function AttendancePortal() {
 
   const applyServerData = (data) => {
     if (data) {
-      setSubjects(data.subjects && data.subjects.length ? data.subjects : seedSubjects);
-      setStudents(data.students && data.students.length ? data.students : seedStudents);
+      const finalSubjects = data.subjects && data.subjects.length ? data.subjects : seedSubjects;
+      const finalStudents = data.students && data.students.length ? data.students : seedStudents;
+      setSubjects(finalSubjects);
+      setStudents(finalStudents);
       // Migrate any pre-existing "leave"/"proxy" records (from before the
       // app was simplified to just Present/Absent) into Absent, and any
       // pre-existing keys from before multi-session support (which had no
@@ -2208,12 +2316,31 @@ export default function AttendancePortal() {
         cleanSessions[migratedKey] = val;
       });
       setSessions(cleanSessions);
-      setAttendanceMeta(data.attendanceMeta || {});
+      const finalMeta = data.attendanceMeta || {};
+      setAttendanceMeta(finalMeta);
+
+      // This is now the authoritative "known saved" baseline. Every future
+      // save diffs against this rather than re-sending everything, so a
+      // record someone else deletes can't come back just because this tab
+      // happened to save something unrelated afterward.
+      lastSyncedRef.current = {
+        attendance: cleanAttendance,
+        sessions: cleanSessions,
+        attendanceMeta: finalMeta,
+        subjects: finalSubjects,
+        students: finalStudents,
+      };
     } else {
-      // nothing saved on the server yet — seed it with the real one-time import
-      setAttendance(seedAttendance());
-      setSessions(seedSessions());
+      // nothing saved on the server yet — seed it with the real one-time
+      // import. Nothing is "synced" yet, so reset the baseline to empty —
+      // the next save will correctly treat all of this seed data as new
+      // and upload every bit of it.
+      const seedAtt = seedAttendance();
+      const seedSess = seedSessions();
+      setAttendance(seedAtt);
+      setSessions(seedSess);
       setAttendanceMeta({});
+      lastSyncedRef.current = { attendance: {}, sessions: {}, attendanceMeta: {}, subjects: [], students: [] };
     }
   };
 
@@ -2287,16 +2414,62 @@ export default function AttendancePortal() {
       const deletedSessionKeys = Array.from(pendingDeletesRef.current.sessions);
       const deletedSubjectIds = Array.from(pendingDeletesRef.current.subjects);
       const deletedStudentIds = Array.from(pendingDeletesRef.current.students);
+
+      // Diff against the last known-saved snapshot — only send what's
+      // actually different. This is the fix for deletions (or anything
+      // else) getting silently undone: previously every save re-uploaded
+      // the ENTIRE local attendance/sessions/students/subjects state, so a
+      // tab with a slightly stale snapshot would re-create a record
+      // someone else had just deleted, simply by saving something
+      // unrelated. Diffing means an unchanged record is never re-sent, so
+      // there's nothing for a stale tab to accidentally resurrect.
+      const baseline = lastSyncedRef.current;
+      const diffAttendance = {};
+      Object.entries(attendance).forEach(([k, v]) => {
+        if (baseline.attendance[k] !== v) diffAttendance[k] = v;
+      });
+      const diffSessions = {};
+      Object.entries(sessions).forEach(([k, v]) => {
+        if (JSON.stringify(baseline.sessions[k]) !== JSON.stringify(v)) diffSessions[k] = v;
+      });
+      const diffMeta = {};
+      Object.entries(attendanceMeta).forEach(([k, v]) => {
+        if (JSON.stringify(baseline.attendanceMeta[k]) !== JSON.stringify(v)) diffMeta[k] = v;
+      });
+      const diffSubjects = subjects.filter((s) => {
+        const prev = baseline.subjects.find((p) => p.id === s.id);
+        return !prev || JSON.stringify(prev) !== JSON.stringify(s);
+      });
+      const diffStudents = students.filter((s) => {
+        const prev = baseline.students.find((p) => p.id === s.id);
+        return !prev || JSON.stringify(prev) !== JSON.stringify(s);
+      });
+
+      const nothingToSend =
+        Object.keys(diffAttendance).length === 0 &&
+        Object.keys(diffSessions).length === 0 &&
+        Object.keys(diffMeta).length === 0 &&
+        diffSubjects.length === 0 &&
+        diffStudents.length === 0 &&
+        deletedAttendanceKeys.length === 0 &&
+        deletedSessionKeys.length === 0 &&
+        deletedSubjectIds.length === 0 &&
+        deletedStudentIds.length === 0;
+      if (nothingToSend) {
+        setSyncState("saved");
+        return;
+      }
+
       try {
         const res = await fetch("/api/state", {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            subjects,
-            students,
-            attendance,
-            sessions,
-            attendanceMeta,
+            subjects: diffSubjects,
+            students: diffStudents,
+            attendance: diffAttendance,
+            sessions: diffSessions,
+            attendanceMeta: diffMeta,
             deletedAttendanceKeys,
             deletedSessionKeys,
             deletedSubjectIds,
@@ -2308,6 +2481,15 @@ export default function AttendancePortal() {
         deletedSessionKeys.forEach((k) => pendingDeletesRef.current.sessions.delete(k));
         deletedSubjectIds.forEach((k) => pendingDeletesRef.current.subjects.delete(k));
         deletedStudentIds.forEach((k) => pendingDeletesRef.current.students.delete(k));
+        // this save succeeded — the full current state (including whatever
+        // was just sent) is now the new known-saved baseline
+        lastSyncedRef.current = {
+          attendance: { ...attendance },
+          sessions: { ...sessions },
+          attendanceMeta: { ...attendanceMeta },
+          subjects: [...subjects],
+          students: [...students],
+        };
         setSyncState("saved");
       } catch (err) {
         console.error("Failed to save attendance data:", err);
@@ -2326,6 +2508,10 @@ export default function AttendancePortal() {
       console.error("Failed to clear server data:", err);
     }
     pendingDeletesRef.current = { attendance: new Set(), sessions: new Set(), subjects: new Set(), students: new Set() };
+    // the database was just wiped, so nothing is "synced" anymore — reset
+    // the diff baseline to empty, otherwise the next save would only send
+    // whatever differs from the OLD (now-deleted) data instead of everything
+    lastSyncedRef.current = { attendance: {}, sessions: {}, attendanceMeta: {}, subjects: [], students: [] };
     setSubjects(seedSubjects);
     setStudents(seedStudents);
     setAttendance(seedAttendance());
@@ -2507,6 +2693,75 @@ export default function AttendancePortal() {
     });
     setStudents(Array.from(byId.values()));
     return { added, updated, skipped };
+  };
+  // Bulk-merges a parsed multi-sheet attendance workbook (see
+  // parseAttendanceWorkbook) into the shared attendance/sessions state,
+  // same as if every record had been marked by hand — including the audit
+  // trail, so it's clear this batch came from an import rather than being
+  // silently indistinguishable from manual entry.
+  const importAttendanceWorkbook = (parsed) => {
+    const idSet = new Set(students.map((s) => s.id));
+    const metaStamp = { editedBy: currentUser?.username ? `${currentUser.username} (import)` : "import", editedAt: new Date().toISOString() };
+    const newAttendance = {};
+    const newMeta = {};
+    const unmatchedStudents = new Set();
+    let matched = 0;
+    parsed.records.forEach((r) => {
+      if (!idSet.has(r.enroll)) {
+        unmatchedStudents.add(r.enroll);
+        return;
+      }
+      const key = `${r.enroll}__${r.subjectId}__${r.date}__${r.slot}`;
+      newAttendance[key] = r.status;
+      newMeta[key] = metaStamp;
+      matched++;
+    });
+    setAttendance((prev) => ({ ...prev, ...newAttendance }));
+    setAttendanceMeta((prev) => ({ ...prev, ...newMeta }));
+
+    const newSessions = {};
+    parsed.sessions.forEach((s) => {
+      newSessions[`${s.subjectId}__${s.date}__${s.slot}`] = { time: s.time, remark: "" };
+    });
+    setSessions((prev) => {
+      const merged = { ...prev };
+      Object.entries(newSessions).forEach(([key, val]) => {
+        merged[key] = { ...(merged[key] || { time: "", remark: "" }), ...val, remark: merged[key]?.remark || val.remark };
+      });
+      return merged;
+    });
+
+    return {
+      matched,
+      unmatchedStudents: Array.from(unmatchedStudents),
+      matchedSheets: parsed.matchedSheets,
+      unmatchedSheets: parsed.unmatchedSheets,
+    };
+  };
+  const handleAttendanceFileImport = async (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    setImportingAttendance(true);
+    try {
+      const parsed = await parseAttendanceWorkbook(file, subjects);
+      if (parsed.matchedSheets.length === 0) {
+        window.alert(
+          `Couldn't match any sheet names to your subjects.\n\nSheets found: ${parsed.unmatchedSheets.join(", ")}\n\nMake sure sheet names match a subject's code (e.g. "RM", "OS&MF") or full name.`
+        );
+        return;
+      }
+      const result = importAttendanceWorkbook(parsed);
+      let msg = `Imported ${result.matched} attendance records from: ${result.matchedSheets.join(", ")}.`;
+      if (result.unmatchedSheets.length) msg += `\n\nSkipped sheets (couldn't match to a subject): ${result.unmatchedSheets.join(", ")}.`;
+      if (result.unmatchedStudents.length) msg += `\n\n${result.unmatchedStudents.length} enrollment number(s) in the file don't match any current student and were skipped.`;
+      window.alert(msg);
+    } catch (err) {
+      console.error("Attendance import failed:", err);
+      window.alert("Couldn't read that file. Make sure it's a valid .xlsx workbook.");
+    } finally {
+      setImportingAttendance(false);
+    }
   };
   const addSubject = (data) => {
     setSubjects((prev) => [...prev, { ...data, id: `S${idCounter.current++}` }]);
@@ -3171,6 +3426,38 @@ export default function AttendancePortal() {
               {syncState === "error" && "Couldn't reach database (check setup)"}
               {syncState === "idle" && "—"}
             </div>
+            <input
+              ref={attendanceFileInputRef}
+              type="file"
+              accept=".xlsx,.xls"
+              onChange={handleAttendanceFileImport}
+              style={{ display: "none" }}
+            />
+            <button
+              onClick={() => attendanceFileInputRef.current?.click()}
+              disabled={importingAttendance}
+              style={{
+                width: "100%",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                gap: 8,
+                padding: "9px 12px",
+                marginTop: 10,
+                borderRadius: 8,
+                background: "transparent",
+                border: `1px solid ${COLORS.inkSoft}`,
+                color: COLORS.parchment,
+                fontWeight: 500,
+                fontSize: 12,
+                cursor: importingAttendance ? "default" : "pointer",
+                opacity: importingAttendance ? 0.6 : 1,
+              }}
+              title='Upload a multi-sheet Excel workbook — one sheet per subject, named by subject code (e.g. "RM", "OS&MF")'
+            >
+              <Upload size={14} />
+              {importingAttendance ? "Importing…" : "Import Attendance (Excel)"}
+            </button>
             <button
               onClick={resetToSampleData}
               style={{
