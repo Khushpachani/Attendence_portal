@@ -401,6 +401,22 @@ const norm = (s) => String(s || "").toLowerCase().replace(/[^a-z0-9]/g, "");
 function cellToStatus(val) {
   if (val === null || val === undefined || val === "") return null;
   if (typeof val === "boolean") return val ? "present" : "absent";
+  if (typeof val === "object") {
+    // ExcelJS represents a formula cell as { formula: "TRUE()", result: true }
+    // — but when the cached result is falsy (or was never cached), "result"
+    // can be missing entirely, so fall back to reading the formula text
+    // itself rather than silently treating the cell as blank.
+    if ("result" in val && typeof val.result === "boolean") return val.result ? "present" : "absent";
+    if (typeof val.formula === "string") {
+      const f = val.formula.trim().toUpperCase().replace(/\s+/g, "");
+      if (f === "TRUE()" || f === "TRUE") return "present";
+      if (f === "FALSE()" || f === "FALSE") return "absent";
+    }
+    if ("text" in val) return cellToStatus(val.text); // rich-text cell fallback
+    if ("richText" in val && Array.isArray(val.richText)) {
+      return cellToStatus(val.richText.map((r) => r.text).join(""));
+    }
+  }
   const s = String(val).trim().toLowerCase();
   if (["true", "p", "present", "1", "yes", "y"].includes(s)) return "present";
   if (["false", "a", "absent", "0", "no", "n"].includes(s)) return "absent";
